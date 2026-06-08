@@ -1,0 +1,8 @@
+out/
+.vs/
+.claude/
+*.docx
+make_plan.js
+*.user
+*.db
+*.sqlite

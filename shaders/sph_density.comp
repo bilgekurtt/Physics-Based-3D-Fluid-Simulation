@@ -1,0 +1,83 @@
+// Pass 2: computes density and near-density for each particle using predicted
+// positions. Uses shared-memory tiling for neighbour search (256 particles per tile).
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 position;
+    vec4 predictedPosition;
+    vec4 velocity;
+    vec4 densities;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
+
+layout(std140, binding = 0) uniform SimUniforms {
+    vec4  gravity;
+    vec4  boxMin;
+    vec4  boxMax;
+    float smoothingRadius;
+    float smoothingRadius2;
+    float targetDensity;
+    float pressureMultiplier;
+    float nearPressureMultiplier;
+    float viscosityStrength;
+    float timeStep;
+    float collisionDamping;
+    int   numParticles;
+    float predictionFactor;
+    float maxVelocity;
+    float _pad0; float _pad1; float _pad2; float _pad3; float _pad4;
+};
+
+shared vec4 s_predPos[256];
+
+float spikyPow2(float r) {
+    float h4   = smoothingRadius2 * smoothingRadius2;
+    float diff = smoothingRadius - r;
+    return (6.0 / (3.14159265359 * h4)) * diff * diff;
+}
+
+float spikyPow3(float r) {
+    float h5   = smoothingRadius2 * smoothingRadius2 * smoothingRadius;
+    float diff = smoothingRadius - r;
+    return (10.0 / (3.14159265359 * h5)) * diff * diff * diff;
+}
+
+void main() {
+    uint i   = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+    bool valid = int(i) < numParticles;
+
+    vec3 pi = valid ? particles[i].predictedPosition.xyz : vec3(1e9);
+
+    float density    = 0.0;
+    float nearDensity = 0.0;
+
+    int numTiles = (numParticles + 255) / 256;
+    for (int tile = 0; tile < numTiles; tile++) {
+        uint j = uint(tile) * 256u + lid;
+        s_predPos[lid] = (int(j) < numParticles)
+            ? particles[j].predictedPosition
+            : vec4(1e9, 1e9, 1e9, 0.0);
+        barrier();
+
+        if (valid) {
+            for (int k = 0; k < 256; k++) {
+                vec3  rij = pi - s_predPos[k].xyz;
+                float r2  = dot(rij, rij);
+                if (r2 < smoothingRadius2) {
+                    float r = sqrt(r2);
+                    density     += spikyPow2(r);
+                    nearDensity += spikyPow3(r);
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (!valid) return;
+
+    particles[i].densities.x = density;
+    particles[i].densities.y = nearDensity;
+}

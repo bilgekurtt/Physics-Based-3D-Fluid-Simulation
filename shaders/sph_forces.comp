@@ -1,0 +1,103 @@
+// Pass 3: computes pressure forces from density and near-density, then applies
+// the resulting acceleration directly to each particle's velocity.
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 position;
+    vec4 predictedPosition;
+    vec4 velocity;
+    vec4 densities;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
+
+layout(std140, binding = 0) uniform SimUniforms {
+    vec4  gravity;
+    vec4  boxMin;
+    vec4  boxMax;
+    float smoothingRadius;
+    float smoothingRadius2;
+    float targetDensity;
+    float pressureMultiplier;
+    float nearPressureMultiplier;
+    float viscosityStrength;
+    float timeStep;
+    float collisionDamping;
+    int   numParticles;
+    float predictionFactor;
+    float maxVelocity;
+    float _pad0; float _pad1; float _pad2; float _pad3; float _pad4;
+};
+
+shared vec4 s_predPos[256];
+shared vec4 s_densities[256];
+
+float spikyPow2Grad(float r) {
+    float h4   = smoothingRadius2 * smoothingRadius2;
+    float diff = smoothingRadius - r;
+    return -(12.0 / (3.14159265359 * h4)) * diff;
+}
+
+float spikyPow3Grad(float r) {
+    float h5   = smoothingRadius2 * smoothingRadius2 * smoothingRadius;
+    float diff = smoothingRadius - r;
+    return -(30.0 / (3.14159265359 * h5)) * diff * diff;
+}
+
+void main() {
+    uint i   = gl_GlobalInvocationID.x;
+    uint lid = gl_LocalInvocationID.x;
+    bool valid = int(i) < numParticles;
+
+    vec3  pi          = valid ? particles[i].predictedPosition.xyz : vec3(1e9);
+    float density_i   = valid ? particles[i].densities.x           : 1.0;
+    float nearDens_i  = valid ? particles[i].densities.y           : 0.0;
+
+    float pressure_i     = (density_i  - targetDensity) * pressureMultiplier;
+    float nearPressure_i = nearDens_i * nearPressureMultiplier;
+
+    vec3 pressureForce = vec3(0.0);
+
+    int numTiles = (numParticles + 255) / 256;
+    for (int tile = 0; tile < numTiles; tile++) {
+        uint j = uint(tile) * 256u + lid;
+        if (int(j) < numParticles) {
+            s_predPos[lid]   = particles[j].predictedPosition;
+            s_densities[lid] = particles[j].densities;
+        } else {
+            s_predPos[lid]   = vec4(1e9, 1e9, 1e9, 0.0);
+            s_densities[lid] = vec4(1.0, 0.0, 0.0, 0.0);
+        }
+        barrier();
+
+        if (valid) {
+            for (int k = 0; k < 256; k++) {
+                uint gj = uint(tile) * 256u + uint(k);
+                if (gj == i || int(gj) >= numParticles) continue;
+
+                vec3  rij  = pi - s_predPos[k].xyz;
+                float rLen = length(rij);
+                if (rLen <= 0.0001 || rLen >= smoothingRadius) continue;
+
+                float density_j      = s_densities[k].x;
+                float nearDens_j     = s_densities[k].y;
+                float pressure_j     = (density_j  - targetDensity) * pressureMultiplier;
+                float nearPressure_j = nearDens_j * nearPressureMultiplier;
+
+                float sharedPressure     = (pressure_i     + pressure_j)     * 0.5;
+                float sharedNearPressure = (nearPressure_i + nearPressure_j) * 0.5;
+
+                vec3 dir = -rij / rLen;
+
+                pressureForce += dir * spikyPow2Grad(rLen) * sharedPressure     / max(density_j,  0.001);
+                pressureForce += dir * spikyPow3Grad(rLen) * sharedNearPressure / max(nearDens_j, 0.001);
+            }
+        }
+        barrier();
+    }
+
+    if (!valid) return;
+
+    particles[i].velocity.xyz += (pressureForce / max(density_i, 0.001)) * timeStep;
+}

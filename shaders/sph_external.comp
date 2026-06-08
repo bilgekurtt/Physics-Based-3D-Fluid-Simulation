@@ -1,0 +1,45 @@
+// Pass 1: applies gravity to each particle's velocity and computes a predicted
+// position one sub-step ahead, used by the density and pressure passes.
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 position;
+    vec4 predictedPosition;
+    vec4 velocity;
+    vec4 densities;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
+
+layout(std140, binding = 0) uniform SimUniforms {
+    vec4  gravity;
+    vec4  boxMin;
+    vec4  boxMax;
+    float smoothingRadius;
+    float smoothingRadius2;
+    float targetDensity;
+    float pressureMultiplier;
+    float nearPressureMultiplier;
+    float viscosityStrength;
+    float timeStep;
+    float collisionDamping;
+    int   numParticles;
+    float predictionFactor;
+    float maxVelocity;
+    float _pad0; float _pad1; float _pad2; float _pad3; float _pad4;
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (int(i) >= numParticles) return;
+
+    vec3 vel = particles[i].velocity.xyz;
+    vel += gravity.xyz * timeStep;
+
+    float spd = length(vel);
+    if (spd > maxVelocity) vel *= (maxVelocity / spd);
+
+    particles[i].velocity.xyz          = vel;
+    particles[i].predictedPosition.xyz = particles[i].position.xyz + vel * predictionFactor;
+}

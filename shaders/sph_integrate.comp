@@ -1,0 +1,123 @@
+// Pass 5: advances each particle's position by velocity * dt, then resolves
+// collisions with the outer AABB, any solid box colliders, an optional sphere
+// obstacle, and (when staircaseMode is set) the 5-step staircase geometry.
+#version 430 core
+layout(local_size_x = 256) in;
+
+struct Particle {
+    vec4 position;
+    vec4 predictedPosition;
+    vec4 velocity;
+    vec4 densities;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
+
+layout(std140, binding = 0) uniform SimUniforms {
+    vec4  gravity;
+    vec4  boxMin;
+    vec4  boxMax;
+    float smoothingRadius;
+    float smoothingRadius2;
+    float targetDensity;
+    float pressureMultiplier;
+    float nearPressureMultiplier;
+    float viscosityStrength;
+    float timeStep;
+    float collisionDamping;
+    int   numParticles;
+    float predictionFactor;
+    float maxVelocity;
+    float _pad0; float _pad1; float _pad2; float _pad3; float _pad4;
+};
+
+layout(std140, binding = 1) uniform ColliderUniforms {
+    vec4 cMin[8];
+    vec4 cMax[8];
+    int  numColliders;
+    vec4 spherePosRad;
+    int  sphereActive;
+    int  staircaseMode;
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (int(i) >= numParticles) return;
+
+    vec3 vel = particles[i].velocity.xyz;
+    vec3 pos = particles[i].position.xyz + vel * timeStep;
+
+    if (pos.x < boxMin.x) { pos.x = boxMin.x; vel.x *= -collisionDamping; }
+    if (pos.x > boxMax.x) { pos.x = boxMax.x; vel.x *= -collisionDamping; }
+    if (pos.y < boxMin.y) { pos.y = boxMin.y; vel.y *= -collisionDamping; }
+    if (pos.y > boxMax.y) { pos.y = boxMax.y; vel.y *= -collisionDamping; }
+    if (pos.z < boxMin.z) { pos.z = boxMin.z; vel.z *= -collisionDamping; }
+    if (pos.z > boxMax.z) { pos.z = boxMax.z; vel.z *= -collisionDamping; }
+
+    for (int c = 0; c < numColliders; c++) {
+        vec3 mn = cMin[c].xyz;
+        vec3 mx = cMax[c].xyz;
+
+        if (pos.x > mn.x && pos.x < mx.x &&
+            pos.y > mn.y && pos.y < mx.y &&
+            pos.z > mn.z && pos.z < mx.z)
+        {
+            float dx1 = pos.x - mn.x, dx2 = mx.x - pos.x;
+            float dy1 = pos.y - mn.y, dy2 = mx.y - pos.y;
+            float dz1 = pos.z - mn.z, dz2 = mx.z - pos.z;
+            float minD = min(min(dx1, dx2), min(min(dy1, dy2), min(dz1, dz2)));
+
+            if      (minD == dx1) { pos.x = mn.x; vel.x *= -collisionDamping; }
+            else if (minD == dx2) { pos.x = mx.x; vel.x *= -collisionDamping; }
+            else if (minD == dy1) { pos.y = mn.y; vel.y *= -collisionDamping; }
+            else if (minD == dy2) { pos.y = mx.y; vel.y *= -collisionDamping; }
+            else if (minD == dz1) { pos.z = mn.z; vel.z *= -collisionDamping; }
+            else                  { pos.z = mx.z; vel.z *= -collisionDamping; }
+        }
+    }
+
+    if (sphereActive != 0) {
+        vec3  toP  = pos - spherePosRad.xyz;
+        float dist = length(toP);
+        if (dist < spherePosRad.w) {
+            vec3  n  = (dist > 0.0001) ? toP / dist : vec3(0.0, 1.0, 0.0);
+            pos      = spherePosRad.xyz + n * spherePosRad.w;
+            float vn = dot(vel, n);
+            if (vn < 0.0) vel -= (1.0 + collisionDamping) * vn * n;
+        }
+    }
+
+    if (staircaseMode != 0) {
+        float bW = boxMax.x - boxMin.x;
+        float bH = boxMax.y - boxMin.y;
+        float sw = bW / 5.0;
+        float sh = bH / 5.0;
+
+        for (int s = 0; s < 4; s++) {
+            float sxmin = boxMin.x + float(s)     * sw;
+            float sxmax = boxMin.x + float(s + 1) * sw;
+            float symax = boxMin.y + float(s + 1) * sh;
+
+            if (pos.x > sxmin && pos.x < sxmax && pos.y < symax) {
+                float dTop   = symax - pos.y;
+                float dLeft  = pos.x - sxmin;
+                float dRight = sxmax - pos.x;
+
+                bool leftOpen  = (s > 0);
+                bool rightOpen = false;
+
+                float minD = dTop;
+                int   face = 0;
+                if (leftOpen  && dLeft  < minD) { minD = dLeft; face = 1; }
+                if (rightOpen && dRight < minD) {                face = 2; }
+
+                if (face == 0) { pos.y = symax; if (vel.y < 0.0) vel.y *= -collisionDamping; }
+                if (face == 1) { pos.x = sxmin; if (vel.x > 0.0) vel.x *= -collisionDamping; }
+                if (face == 2) { pos.x = sxmax; if (vel.x < 0.0) vel.x *= -collisionDamping; }
+            }
+        }
+    }
+
+    particles[i].position.xyz = pos;
+    particles[i].velocity.xyz = vel;
+}

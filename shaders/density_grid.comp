@@ -1,0 +1,70 @@
+// Builds a 3-D density texture from particle positions using a massless SpikyPow2
+// kernel. Each voxel accumulates contributions from all particles within the
+// smoothing radius. The texture is consumed by the ray-march pass.
+#version 430 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
+
+struct Particle {
+    vec4 position;
+    vec4 predictedPosition;
+    vec4 velocity;
+    vec4 densities;
+};
+
+layout(std430, binding = 0) buffer ParticleBuffer { Particle particles[]; };
+layout(r32f,   binding = 1) uniform image3D uDensityGrid;
+
+layout(std140, binding = 0) uniform SimUniforms {
+    vec4  gravity;
+    vec4  boxMin;
+    vec4  boxMax;
+    float smoothingRadius;
+    float smoothingRadius2;
+    float targetDensity;
+    float pressureMultiplier;
+    float nearPressureMultiplier;
+    float viscosityStrength;
+    float timeStep;
+    float collisionDamping;
+    int   numParticles;
+    float predictionFactor;
+    float maxVelocity;
+    float _pad0; float _pad1; float _pad2; float _pad3; float _pad4;
+};
+
+uniform ivec3 uGridRes;
+
+shared vec4 s_pos[256];
+
+void main() {
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    if (any(greaterThanEqual(voxel, uGridRes))) return;
+
+    vec3  cellSize = (boxMax.xyz - boxMin.xyz) / vec3(uGridRes);
+    vec3  worldPos = boxMin.xyz + (vec3(voxel) + 0.5) * cellSize;
+    float h4       = smoothingRadius2 * smoothingRadius2;
+    float coeff    = 6.0 / (3.14159265359 * h4);
+    float density  = 0.0;
+    uint  lid      = gl_LocalInvocationIndex;
+
+    int numTiles = (numParticles + 255) / 256;
+    for (int tile = 0; tile < numTiles; tile++) {
+        uint j = uint(tile) * 256u + lid;
+        s_pos[lid] = (int(j) < numParticles)
+            ? particles[j].position
+            : vec4(1e9, 1e9, 1e9, 0.0);
+        barrier();
+
+        for (int k = 0; k < 256; k++) {
+            vec3  rij = worldPos - s_pos[k].xyz;
+            float r2  = dot(rij, rij);
+            if (r2 < smoothingRadius2) {
+                float diff = smoothingRadius - sqrt(r2);
+                density += coeff * diff * diff;
+            }
+        }
+        barrier();
+    }
+
+    imageStore(uDensityGrid, voxel, vec4(density, 0.0, 0.0, 0.0));
+}
