@@ -3,13 +3,12 @@ project(SPH_FluidSim)
 
 set(CMAKE_CXX_STANDARD 17)
 
-# Bağımlılıkları vcpkg'den bul
+#find dependencies from vcpkg
 find_package(glm CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 
-# BURASI ÇOK ÖNEMLİ: Yeni eklediğin .cpp dosyalarını buraya tek tek yazmalısın
 add_executable(${PROJECT_NAME} 
     "src/main.cpp"
     "src/imgui_impl_glfw.cpp"
@@ -17,7 +16,6 @@ add_executable(${PROJECT_NAME}
     "src/Sphsolver.cpp"
  "src/Shader.h" "src/Camera.h")
 
-# Kütüphaneleri bağla
 target_link_libraries(${PROJECT_NAME} PRIVATE 
     glm::glm 
     glfw 
