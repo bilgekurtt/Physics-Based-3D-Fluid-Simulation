@@ -14,7 +14,7 @@ Real-time 3D fluid simulation using Smoothed Particle Hydrodynamics (SPH) on the
 | RMB + drag | Orbit camera |
 | MMB + drag | Pan |
 | Scroll | Zoom |
-| LMB + drag | Move gizmo / rotate hourglass |
+| LMB + drag | Move gizmo |
 
 ## Build
 Requires Visual Studio 2022 with CMake and vcpkg.
